@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>外縁の狩人</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#172219}
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#game{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block;background:#29402d}
+#hud{position:fixed;z-index:10;left:10px;top:10px;color:white;background:rgba(8,12,9,.78);
+ border:1px solid rgba(255,255,255,.18);border-radius:12px;padding:9px 11px;font-size:12px;
+ box-shadow:0 4px 18px #0008}
+#hud b{font-size:14px}.bar{width:150px;height:8px;background:#333;border-radius:8px;overflow:hidden;margin:3px 0 5px}
+.fill{height:100%;width:100%}.hp{background:#e85b62}.xp{background:#61a5ff}
+#message{position:fixed;z-index:20;top:18%;left:50%;transform:translateX(-50%);color:#fff;
+ font-weight:900;font-size:22px;text-shadow:0 2px 5px #000;opacity:0;transition:opacity .15s;pointer-events:none}
+#controls{display:block;position:fixed;z-index:30;inset:0;pointer-events:none}
+.btn{position:absolute;border:1px solid #ffffff55;color:white;background:#17201ddd;
+ border-radius:16px;display:flex;align-items:center;justify-content:center;font-weight:900;
+ box-shadow:0 4px 14px #0007;user-select:none;-webkit-user-select:none;touch-action:none}
+.btn:active{transform:scale(.94);background:#486276ee}
+#dpad{position:absolute;left:14px;bottom:18px;width:168px;height:168px}
+.dir{width:54px;height:54px;font-size:25px;pointer-events:auto}
+#up{left:57px;top:0}#left{left:0;top:57px}#down{left:57px;top:114px}#right{left:114px;top:57px}
+#attack{right:22px;bottom:34px;width:82px;height:82px;border-radius:50%;font-size:31px;background:#8e3737dd;pointer-events:auto}
+#potion{right:120px;bottom:32px;width:58px;height:58px;border-radius:50%;font-size:25px;pointer-events:auto}
+#upgrade{right:132px;bottom:105px;width:50px;height:50px;border-radius:50%;font-size:16px;pointer-events:auto}
+@media(min-width:801px) and (pointer:fine){
+ #controls{display:none}
+ #hud{font-size:13px}
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+ <div style="font-weight:900;font-size:16px">⚔ 外縁の狩人</div>
+ Lv <b id="lv">1</b>　武器 <b id="weapon">木剣</b><br>
+ HP <b id="hpText">100/100</b>
+ <div class="bar"><div id="hpBar" class="fill hp"></div></div>
+ XP <b id="xpText">0/100</b>
+ <div class="bar"><div id="xpBar" class="fill xp"></div></div>
+ 素材 <b id="mat">0</b>　🧪 <b id="pot">2</b>
+</div>
+<div id="message"></div>
+
+<div id="controls">
+ <div id="dpad">
+  <div class="btn dir" id="up">▲</div>
+  <div class="btn dir" id="left">◀</div>
+  <div class="btn dir" id="down">▼</div>
+  <div class="btn dir" id="right">▶</div>
+ </div>
+ <div class="btn" id="attack">⚔</div>
+ <div class="btn" id="potion">🧪</div>
+ <div class="btn" id="upgrade">Q</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+let sw=innerWidth, sh=innerHeight, scale=1;
+
+function resize(){
+  sw=innerWidth; sh=innerHeight; scale=Math.min(devicePixelRatio||1,2);
+  canvas.width=Math.floor(sw*scale); canvas.height=Math.floor(sh*scale);
+  canvas.style.width=sw+"px"; canvas.style.height=sh+"px";
+  ctx.setTransform(scale,0,0,scale,0,0);
+}
+addEventListener("resize",resize); resize();
+
+const world={w:4800,h:4800};
+const player={
+ x:2400,y:2400,r:16,hp:100,maxHp:100,lv:1,xp:0,next:100,
+ mat:0,pot:2,weapon:1,attackCd:0,inv:0
+};
+const keys={up:false,down:false,left:false,right:false,attack:false};
+const enemies=[],chests=[],items=[],sparks=[];
+const rng=(a,b)=>a+Math.random()*(b-a);
+const d=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+const danger=(x,y)=>Math.min(1,Math.hypot(x-2400,y-2400)/3300);
+
+function say(t){
+ const m=document.getElementById("message");m.textContent=t;m.style.opacity="1";
+ clearTimeout(say.timer);say.timer=setTimeout(()=>m.style.opacity="0",800);
+}
+function levelUp(n){
+ player.xp+=n;
+ while(player.xp>=player.next){
+  player.xp-=player.next;player.lv++;player.next=Math.floor(player.next*1.3);
+  player.maxHp+=12;player.hp=player.maxHp;player.weapon++;
+  say("LEVEL UP!  Lv "+player.lv);
+ }
+}
+function heal(){
+ if(player.pot>0 && player.hp<player.maxHp){
+  player.pot--;player.hp=Math.min(player.maxHp,player.hp+55);say("回復！");
+ }else if(player.pot<=0)say("回復薬がない！");
+}
+function upgrade(){
+ const cost=8+player.weapon*7;
+ if(player.mat>=cost){player.mat-=cost;player.weapon++;say("武器強化！")}
+ else say("素材 "+cost+" 個が必要");
+}
+
+function spawnEnemy(){
+ const a=rng(0,Math.PI*2),r=rng(500,2250),x=2400+Math.cos(a)*r,y=2400+Math.sin(a)*r;
+ const lv=Math.max(1,Math.floor(1+danger(x,y)*9+rng(-1,2)));
+ enemies.push({x,y,r:13+lv*.6,lv,hp:28+lv*18,max:28+lv*18,
+   speed:35+lv*3,atk:7+lv*2,cd:0,dead:false});
+}
+for(let i=0;i<85;i++)spawnEnemy();
+
+for(let i=0;i<35;i++){
+ const a=rng(0,Math.PI*2),r=rng(250,2200);
+ chests.push({x:2400+Math.cos(a)*r,y:2400+Math.sin(a)*r,open:false});
+}
+for(let i=0;i<55;i++){
+ const a=rng(0,Math.PI*2),r=rng(0,2450);
+ items.push({x:2400+Math.cos(a)*r,y:2400+Math.sin(a)*r,type:Math.random()<.6?"mat":Math.random()<.5?"xp":"pot",taken:false});
+}
+
+function attack(){
+ if(player.attackCd>0)return;
+ player.attackCd=.25;
+ // スマホでは攻撃ボタンを押したら「近くの敵」を自動照準
+ let target=null,best=Infinity;
+ for(const e of enemies){
+  if(e.dead)continue;
+  const q=d(player,e);
+  if(q<125 && q<best){best=q;target=e}
+ }
+ if(!target)return;
+ target.hp-=12+player.weapon*7;
+ for(let i=0;i<6;i++)sparks.push({x:target.x,y:target.y,vx:rng(-70,70),vy:rng(-70,70),life:.3});
+ if(target.hp<=0){
+  target.dead=true;
+  levelUp(18+target.lv*8);
+  player.mat+=1+Math.floor(target.lv/4);
+  if(Math.random()<.2)items.push({x:target.x,y:target.y,type:"pot",taken:false});
+ }
+}
+
+function update(dt){
+ player.attackCd=Math.max(0,player.attackCd-dt);
+ player.inv=Math.max(0,player.inv-dt);
+
+ let vx=(keys.right?1:0)-(keys.left?1:0);
+ let vy=(keys.down?1:0)-(keys.up?1:0);
+ const len=Math.hypot(vx,vy)||1;
+ player.x=Math.max(25,Math.min(world.w-25,player.x+vx/len*230*dt));
+ player.y=Math.max(25,Math.min(world.h-25,player.y+vy/len*230*dt));
+
+ if(keys.attack)attack();
+
+ for(const e of enemies){
+  if(e.dead)continue;
+  e.cd=Math.max(0,e.cd-dt);
+  const dx=player.x-e.x,dy=player.y-e.y,dist=Math.hypot(dx,dy)||1;
+  if(dist<650){e.x+=dx/dist*e.speed*dt;e.y+=dy/dist*e.speed*dt}
+  if(dist<e.r+player.r+4 && e.cd<=0 && player.inv<=0){
+   player.hp-=e.atk;player.inv=.5;say("ダメージ！");
+   if(player.hp<=0){player.hp=player.maxHp;player.x=2400;player.y=2400;say("力尽きた…中央へ帰還")}
+  }
+ }
+
+ for(const ch of chests){
+  if(!ch.open&&d(player,ch)<48){
+   ch.open=true;const r=Math.random();
+   if(r<.45){const n=5+Math.floor(Math.random()*10);player.mat+=n;say("宝箱：素材 ×"+n)}
+   else if(r<.75){levelUp(50+Math.floor(Math.random()*60));say("宝箱：大量XP！")}
+   else{player.pot+=2;say("宝箱：回復薬 ×2")}
+  }
+ }
+ for(const it of items){
+  if(!it.taken&&d(player,it)<32){
+   it.taken=true;
+   if(it.type==="mat"){player.mat+=2;say("素材 ×2")}
+   else if(it.type==="xp"){levelUp(45);say("XP +45")}
+   else{player.pot++;say("回復薬 +1")}
+  }
+ }
+ for(const s of sparks){s.x+=s.vx*dt;s.y+=s.vy*dt;s.life-=dt}
+ while(enemies.filter(e=>!e.dead).length<75)spawnEnemy();
+
+ document.getElementById("lv").textContent=player.lv;
+ document.getElementById("weapon").textContent=player.weapon<2?"木剣":player.weapon<4?"鉄剣":player.weapon<6?"鋼剣":"魔剣";
+ document.getElementById("hpText").textContent=Math.ceil(player.hp)+"/"+player.maxHp;
+ document.getElementById("hpBar").style.width=(player.hp/player.maxHp*100)+"%";
+ document.getElementById("xpText").textContent=Math.floor(player.xp)+"/"+player.next;
+ document.getElementById("xpBar").style.width=(player.xp/player.next*100)+"%";
+ document.getElementById("mat").textContent=player.mat;
+ document.getElementById("pot").textContent=player.pot;
+}
+
+function draw(){
+ ctx.clearRect(0,0,sw,sh);
+ const camX=player.x-sw/2,camY=player.y-sh/2;
+ ctx.save();ctx.translate(-camX,-camY);
+
+ // MAP
+ ctx.fillStyle="#2b432f";ctx.fillRect(0,0,world.w,world.h);
+
+ // 外縁ほど赤みが増すリング
+ for(let i=0;i<7;i++){
+  ctx.beginPath();ctx.arc(2400,2400,350+i*350,0,Math.PI*2);
+  ctx.fillStyle=i%2?"rgba(160,65,45,.035)":"rgba(255,255,255,.018)";ctx.fill();
+ }
+ // 道
+ ctx.strokeStyle="rgba(225,210,160,.09)";ctx.lineWidth=70;
+ ctx.beginPath();ctx.moveTo(0,2400);ctx.lineTo(4800,2400);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(2400,0);ctx.lineTo(2400,4800);ctx.stroke();
+ // グリッド
+ ctx.strokeStyle="rgba(255,255,255,.035)";ctx.lineWidth=1;
+ for(let x=0;x<=4800;x+=160){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,4800);ctx.stroke()}
+ for(let y=0;y<=4800;y+=160){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(4800,y);ctx.stroke()}
+
+ // 木
+ for(let x=80;x<4720;x+=210)for(let y=90;y<4720;y+=220){
+  const ox=(x*17+y*11)%80;
+  ctx.fillStyle="#193322";ctx.beginPath();ctx.arc(x+ox,y,22,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#25482d";ctx.beginPath();ctx.arc(x+ox,y-7,16,0,Math.PI*2);ctx.fill();
+ }
+
+ // 宝箱
+ for(const ch of chests)if(!ch.open){
+  ctx.fillStyle="#b97b2d";ctx.fillRect(ch.x-15,ch.y-12,30,24);
+  ctx.fillStyle="#f1c44e";ctx.fillRect(ch.x-3,ch.y-12,6,24);
+ }
+ // アイテム
+ for(const it of items)if(!it.taken){
+  ctx.fillStyle=it.type==="mat"?"#75d8ff":it.type==="xp"?"#b982ff":"#ff7070";
+  ctx.beginPath();ctx.arc(it.x,it.y,7,0,Math.PI*2);ctx.fill();
+ }
+ // 敵
+ for(const e of enemies)if(!e.dead){
+  const z=danger(e.x,e.y);
+  ctx.fillStyle=z>.72?"#7e1641":z>.42?"#a44d25":"#705037";
+  ctx.beginPath();ctx.arc(e.x,e.y,e.r,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#fff";ctx.fillRect(e.x-6,e.y-4,3,3);ctx.fillRect(e.x+3,e.y-4,3,3);
+  ctx.fillStyle="#222";ctx.fillRect(e.x-e.r,e.y-e.r-8,e.r*2,3);
+  ctx.fillStyle="#e75b5b";ctx.fillRect(e.x-e.r,e.y-e.r-8,e.r*2*(e.hp/e.max),3);
+  ctx.fillStyle="#fff";ctx.font="10px sans-serif";ctx.fillText("Lv"+e.lv,e.x-10,e.y+e.r+10);
+ }
+ // 中央の安全地帯
+ ctx.fillStyle="rgba(80,180,255,.12)";ctx.beginPath();ctx.arc(2400,2400,180,0,Math.PI*2);ctx.fill();
+ ctx.strokeStyle="rgba(120,210,255,.45)";ctx.lineWidth=2;ctx.beginPath();ctx.arc(2400,2400,180,0,Math.PI*2);ctx.stroke();
+ ctx.fillStyle="#9edbff";ctx.font="bold 16px sans-serif";ctx.fillText("SAFE",2355,2405);
+
+ // プレイヤー
+ ctx.fillStyle=player.inv>0?"#fff8aa":"#f0f5ff";
+ ctx.beginPath();ctx.arc(player.x,player.y,player.r,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle="#69aaff";ctx.fillRect(player.x+10,player.y-4,30,8);
+
+ for(const s of sparks){
+  ctx.fillStyle="#ffe0a0";ctx.beginPath();ctx.arc(s.x,s.y,3,0,Math.PI*2);ctx.fill();
+ }
+ ctx.restore();
+
+ // 画面下の危険度
+ ctx.fillStyle="rgba(255,100,90,.9)";ctx.font="bold 13px sans-serif";
+ ctx.fillText("外縁危険度 "+Math.round(danger(player.x,player.y)*100)+"%",sw/2-48,sh-10);
+}
+
+function bindHold(id,key){
+ const el=document.getElementById(id);
+ const down=e=>{e.preventDefault();keys[key]=true};
+ const up=e=>{e.preventDefault();keys[key]=false};
+ el.addEventListener("pointerdown",down);
+ el.addEventListener("pointerup",up);
+ el.addEventListener("pointercancel",up);
+ el.addEventListener("pointerleave",up);
+}
+bindHold("up","up");bindHold("down","down");bindHold("left","left");bindHold("right","right");bindHold("attack","attack");
+document.getElementById("potion").addEventListener("pointerdown",e=>{e.preventDefault();heal()});
+document.getElementById("upgrade").addEventListener("pointerdown",e=>{e.preventDefault();upgrade()});
+
+// PC操作も残す
+addEventListener("keydown",e=>{
+ const k=e.key.toLowerCase();
+ if(k==="w"||k==="arrowup")keys.up=true;
+ if(k==="s"||k==="arrowdown")keys.down=true;
+ if(k==="a"||k==="arrowleft")keys.left=true;
+ if(k==="d"||k==="arrowright")keys.right=true;
+ if(k==="r")heal();if(k==="q")upgrade();
+});
+addEventListener("keyup",e=>{
+ const k=e.key.toLowerCase();
+ if(k==="w"||k==="arrowup")keys.up=false;
+ if(k==="s"||k==="arrowdown")keys.down=false;
+ if(k==="a"||k==="arrowleft")keys.left=false;
+ if(k==="d"||k==="arrowright")keys.right=false;
+});
+
+// iPhone Safari: ダブルタップによるページズームを無効化
+document.addEventListener("dblclick", e => e.preventDefault(), {passive:false});
+document.addEventListener("gesturestart", e => e.preventDefault(), {passive:false});
+document.addEventListener("gesturechange", e => e.preventDefault(), {passive:false});
+document.addEventListener("gestureend", e => e.preventDefault(), {passive:false});
+
+let last=performance.now();
+function loop(now){
+ const dt=Math.min(.033,(now-last)/1000);last=now;
+ update(dt);draw();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
